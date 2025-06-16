@@ -144,7 +144,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Conversa finalizada. Volte sempre! 💖")
     return ConversationHandler.END
 
-TOKEN = "SEU_TOKEN_AQUI"
+TOKEN = "7792016518:AAEgbZGtDGkIewbgY0r9uGCtWDcHWlEIknM"
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
