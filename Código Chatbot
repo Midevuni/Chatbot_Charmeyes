@@ -1,0 +1,171 @@
+import datetime
+import csv
+import os
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes, 
+    ConversationHandler,
+    filters,
+)
+
+MENU, SERVICOS, DETALHES, NOME, DATA_HORA = range(5)
+ARQUIVO_CSV = "agendamentos.csv"
+HORARIOS_POR_DIA = 10
+
+# Função para salvar o agendamento
+def salvar_agendamento_csv(nome, data_hora, servico):
+    existe = os.path.exists(ARQUIVO_CSV)
+    with open(ARQUIVO_CSV, mode="a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        if not existe:
+            writer.writerow(["nome", "data_hora", "servico"])
+        writer.writerow([nome, data_hora.strftime("%Y-%m-%d %H:%M"), servico])
+
+# Verifica se o horário está disponível e se ainda há vagas para o dia
+def horario_disponivel(data_hora):
+    if not os.path.exists(ARQUIVO_CSV):
+        return True
+    contador = 0
+    with open(ARQUIVO_CSV, mode="r", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            agendado = datetime.datetime.strptime(row["data_hora"], "%Y-%m-%d %H:%M")
+            if agendado == data_hora:
+                return False
+            if agendado.date() == data_hora.date():
+                contador += 1
+    return contador < HORARIOS_POR_DIA
+
+# Gera os próximos horários disponíveis para escolha
+def gerar_proximos_horarios():
+    base = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+    horarios = []
+    dias_verificados = 0
+    while len(horarios) < 5 and dias_verificados < 14:
+        for hora in range(9, 19):
+            data_hora = base.replace(hour=hora) + datetime.timedelta(days=dias_verificados)
+            if data_hora > datetime.datetime.now() and horario_disponivel(data_hora):
+                horarios.append(data_hora)
+                if len(horarios) >= 5:
+                    break
+        dias_verificados += 1
+    return horarios
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    reply_keyboard = [["1", "2", "3"], ["Falar com atendente"]]
+    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(
+        "Olá! 😊 Bem-vindo ao *Charmeyes*!\n\n"
+        "Escolha uma opção:\n"
+        "1 - Ver serviços e agendar\n"
+        "2 - Fazer uma pergunta\n"
+        "3 - Cancelar agendamento\n"
+        "Falar com atendente",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+    return MENU
+
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    escolha = update.message.text.strip()
+    if escolha == "1":
+        await update.message.reply_text(
+            "✨ *Serviços disponíveis:*\n\n"
+            "• Design personalizado - R$ 40,00\n"
+            "• Design com henna - R$ 55,00\n"
+            "• Brow Lamination - R$ 80,00\n"
+            "• Micropigmentação - R$ 250,00\n\n"
+            "Gostaria de agendar um horário? (Digite 1 para sim ou 2 para voltar)",
+            parse_mode="Markdown"
+        )
+        return SERVICOS
+    elif escolha == "2":
+        await update.message.reply_text("📩 Pode enviar sua dúvida por aqui e responderemos o mais breve possível!")
+        return ConversationHandler.END
+    elif escolha == "3":
+        await update.message.reply_text("Agendamento cancelado. Volte quando quiser! 😊")
+        return ConversationHandler.END
+    elif escolha.lower() == "falar com atendente":
+        await update.message.reply_text("👩‍💼 Uma atendente irá te chamar em breve. Aguarde um instante, por favor!")
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("Digite 1, 2, 3 ou Falar com atendente.")
+        return MENU
+
+async def servicos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    escolha = update.message.text.strip()
+    if escolha == "1":
+        await update.message.reply_text("Ótimo! Qual é o seu nome completo?")
+        return NOME
+    else:
+        return await start(update, context)
+
+async def coletar_nome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["nome"] = update.message.text.strip()
+    horarios = gerar_proximos_horarios()
+    opcoes = [f"{h.strftime('%d/%m/%Y %H:%M')}" for h in horarios]
+    teclado = [[opcao] for opcao in opcoes]
+    markup = ReplyKeyboardMarkup(teclado, one_time_keyboard=True, resize_keyboard=True)
+
+    await update.message.reply_text(
+        "Escolha um dos horários disponíveis abaixo:", reply_markup=markup
+    )
+    return DATA_HORA
+
+async def coletar_data_hora(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        data_texto = update.message.text.strip()
+        data_hora = datetime.datetime.strptime(data_texto, "%d/%m/%Y %H:%M")
+        nome = context.user_data.get("nome", "Cliente")
+
+        if not horario_disponivel(data_hora):
+            await update.message.reply_text("⚠️ Este horário não está mais disponível. Escolha outro, por favor.")
+            return await coletar_nome(update, context)
+
+        salvar_agendamento_csv(nome, data_hora, "Design de sobrancelhas")
+
+        await update.message.reply_text(
+            f"✅ Agendamento confirmado para *{data_texto}*.\nNos vemos em breve, {nome}! 💖",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Formato inválido. Use o padrão *dd/mm/aaaa hh:mm* (ex: 20/06/2025 14:00).",
+            parse_mode="Markdown"
+        )
+        return DATA_HORA
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Conversa finalizada. Volte sempre! 💖")
+    return ConversationHandler.END
+
+TOKEN = "SEU_TOKEN_AQUI"
+
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu)],
+            SERVICOS: [MessageHandler(filters.TEXT & ~filters.COMMAND, servicos)],
+            NOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, coletar_nome)],
+            DATA_HORA: [MessageHandler(filters.TEXT & ~filters.COMMAND, coletar_data_hora)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+
+    app.add_handler(conv_handler)
+    print("🤖 Bot Charmeyes rodando...")
+
+    import logging
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO
+    )
+    app.run_polling()
